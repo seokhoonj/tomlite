@@ -67,11 +67,11 @@ jobs:
           uv venv /tmp/typed --python ${{ matrix.python-version }}
           uv pip install --python /tmp/typed/bin/python . mypy
           cat > /tmp/user_code.py <<'PY'
-          from tomlite import TOMLDocument
+          from tomlite import TOMLEditor
 
-          # `name` is a str; an int is not, so a checker that can see the shipped hints must reject
+          # `key` is a str; an int is not, so a checker that can see the shipped hints must reject
           # this and name the expected type.
-          TOMLDocument([]).set_root_key(123, "x")
+          TOMLEditor([]).set_root_key(123, "x")
           PY
           /tmp/typed/bin/mypy /tmp/user_code.py > /tmp/mypy_out 2>&1 || true
           cat /tmp/mypy_out

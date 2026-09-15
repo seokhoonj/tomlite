@@ -1,0 +1,78 @@
+name: reusable check
+
+# The full check -- tests, lint, types, and the packaging assertions -- factored into one
+# reusable job so both `check.yml` (on push / PR) and the release gate in `publish.yml` run the
+# *identical* thing. One definition is what makes "publish gates on the full check" true; a second
+# hand-maintained copy would drift, and a check added here silently would not gate releases.
+
+on:
+  workflow_call:
+
+# The check only reads the code. Declared here (not only on check.yml) so publish.yml's gate,
+# which calls this same workflow, also runs it with a read-only token.
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor (requires-python >= 3.11) and the versions CPython currently ships.
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
+      - name: Install
+        run: |
+          uv venv --python ${{ matrix.python-version }}
+          uv pip install -e . --group dev
+          .venv/bin/python -c "import sys; print('testing on', sys.version)"
+
+      - name: Test
+        run: .venv/bin/pytest -q
+
+      - name: Lint
+        run: .venv/bin/ruff check src tests
+
+      - name: Types
+        run: .venv/bin/mypy
+
+      - name: Confirm the install has no runtime dependencies
+        # The zero-dependency claim is in the README and the pyproject; a claim nothing checks
+        # quietly stops being true. Install into a bare environment and assert the runtime
+        # requirement set is empty and the package imports with nothing else present.
+        run: |
+          uv venv /tmp/bare --python ${{ matrix.python-version }}
+          uv pip install --python /tmp/bare/bin/python .
+          /tmp/bare/bin/python -c "
+          import importlib.metadata as md
+          requires = md.requires('tomlite') or []
+          assert not requires, f'runtime dependencies appeared: {requires}'
+          import tomlite
+          print('tomlite', tomlite.__version__, 'imports with no third-party packages')
+          "
+
+      - name: Confirm a user's type checker can see the hints
+        # Every hint is invisible to a user unless py.typed ships in the built wheel (PEP 561), and
+        # the source cannot answer whether it did. Install the built package into a clean
+        # environment and run a checker over user code that misuses the API.
+        run: |
+          uv venv /tmp/typed --python ${{ matrix.python-version }}
+          uv pip install --python /tmp/typed/bin/python . mypy
+          cat > /tmp/user_code.py <<'PY'
+          from tomlite import TOMLDocument
+
+          # `name` is a str; an int is not, so a checker that can see the shipped hints must reject
+          # this and name the expected type.
+          TOMLDocument([]).set_root_key(123, "x")
+          PY
+          /tmp/typed/bin/mypy /tmp/user_code.py > /tmp/mypy_out 2>&1 || true
+          cat /tmp/mypy_out
+          grep -q 'str' /tmp/mypy_out

@@ -1,0 +1,74 @@
+[build-system]
+# Cap <1.32: hatchling 1.32 emits Metadata-Version 2.5, which the twine bundled in the pinned
+# PyPI-publish action rejects (pypa/twine#1327). 2.4 is accepted by PyPI and that twine; the
+# 1.27 floor is PEP 639 (the SPDX license expression and license-files). Lift once twine updates.
+requires      = ["hatchling>=1.27,<1.32"]
+build-backend = "hatchling.build"
+
+[project]
+name            = "tomlite"
+version         = "0.1.0"
+description     = "A tiny, zero-dependency TOML editor that changes a config file in place without disturbing its comments or layout."
+readme          = "README.md"
+license         = "MIT"
+license-files   = ["LICENSE"]
+authors         = [{ name = "Seokhoon Joo", email = "seokhoonj@gmail.com" }]
+keywords        = ["toml", "config", "editor", "round-trip", "comments", "formatting"]
+classifiers     = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Text Processing :: Markup",
+    "Typing :: Typed",
+]
+# 3.11+ for `X | None` hints, `tomllib`, and `Self`.
+requires-python = ">=3.11"
+# Reading is the standard library's `tomllib`; this package writes. It pulls in nothing.
+dependencies    = []
+
+[project.urls]
+Homepage   = "https://github.com/seokhoonj/tomlite"
+Repository = "https://github.com/seokhoonj/tomlite"
+Issues     = "https://github.com/seokhoonj/tomlite/issues"
+
+# Development tooling is a PEP 735 dependency group, not a published extra: it stays out of the
+# distribution metadata, so a plain `pip install tomlite` pulls in nothing. Install it for local
+# work or CI with `uv pip install -e . --group dev` (or `pip install -e . --group dev`).
+[dependency-groups]
+dev = [
+    "mypy>=1.11",
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tomlite"]
+
+[tool.ruff]
+line-length    = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src", "tests"]
+strict = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+check_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

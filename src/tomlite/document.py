@@ -86,9 +86,10 @@ class TOMLEditor:
 
     def __init__(self, lines: list[str]) -> None:
         self._lines = lines
-        # Scanned once: a multi-line string anywhere makes the line scan unsafe, so the
-        # editing operations refuse (reading -- dumps/save -- stays fine). tomlite never
-        # emits one, so this verdict stays valid across edits.
+        # Scanned once: a construct outside the flat grammar (a multi-line string, an array of
+        # arrays, a non-bare-path header, an unparseable key) makes the line scan unsafe, so the
+        # editing operations refuse (reading -- dumps/save -- stays fine). tomlite never emits
+        # one, so this verdict stays valid across edits.
         self._unsupported = _find_unsupported(lines)
 
     @classmethod
@@ -177,8 +178,7 @@ class TOMLEditor:
         line = f"{_emit_key(key)} = {_emit_value(value)}"
         if entry is not None:
             if not only_if_absent:
-                first, last = entry
-                self._lines[first:last] = [line + _trailing_comment(self._lines[first])]
+                self._replace_entry(*entry, line)
             return
         if self._table_declares(key):
             raise UnsupportedTOMLError(
@@ -247,11 +247,11 @@ class TOMLEditor:
             return
         # Insert above the target header's leading comment run (not between the comment and its
         # header), blank-separated on both sides so the new block groups cleanly with the table
-        # it precedes rather than butting against the header.
+        # it precedes rather than butting against the header. `lines[at]` is that comment or the
+        # header itself -- always non-blank -- so a trailing blank always separates them.
         at = self._header_comment_start(header)
         before = [""] if at > 0 and self._lines[at - 1].strip() else []
-        after = [""] if self._lines[at].strip() else []
-        self._lines[at:at] = [*before, *block, *after]
+        self._lines[at:at] = [*before, *block, ""]
 
     def update_in_array(
         self,
@@ -275,7 +275,7 @@ class TOMLEditor:
         anchor = start  # after the header, if the field is not already present
         for key, first, last in self._entries(start + 1, end):
             if key == field:
-                self._lines[first:last] = [line + _trailing_comment(self._lines[first])]
+                self._replace_entry(first, last, line)
                 return True
             if key == match_field:
                 anchor = first
@@ -313,7 +313,7 @@ class TOMLEditor:
         end = self._table_end(header + 1)
         for entry_key, first, last in self._entries(header + 1, end):
             if entry_key == key:
-                self._lines[first:last] = [line + _trailing_comment(self._lines[first])]
+                self._replace_entry(first, last, line)
                 return
         self._lines.insert(end, line)
 
@@ -324,7 +324,7 @@ class TOMLEditor:
         separator around it. Returns whether it was there.
 
         Raises:
-            UnsupportedTOMLError: the document uses a multi-line string.
+            UnsupportedTOMLError: the document is outside the flat grammar.
         """
         entry = self._root_entry(key)
         if entry is None:
@@ -355,6 +355,12 @@ class TOMLEditor:
                 del self._lines[first:last]
                 return True
         return False
+
+    def _replace_entry(self, first: int, last: int, line: str) -> None:
+        """Replace the entry spanning `lines[first:last]` with `line`, carrying over the
+        trailing comment the reader left on the entry's first line so a value change keeps
+        its note."""
+        self._lines[first:last] = [line + _trailing_comment(self._lines[first])]
 
     def _drop(self, start: int, end: int) -> None:
         """Delete `lines[start:end]` plus one adjacent blank separator -- the one before it,
@@ -565,11 +571,7 @@ def _has_unparseable_key(line: str) -> bool:
     """Whether `line` is an assignment (a structural `=`, outside any string or comment)
     whose key the scanner cannot parse -- a dotted or mixed quoted/bare dotted key. Such a
     line is invisible to `_entries`, so it is refused rather than silently mis-edited."""
-    masked = _without_strings(line)
-    hash_at = masked.find("#")
-    if hash_at != -1:
-        masked = masked[:hash_at]
-    return "=" in masked and _line_key(line) is None
+    return "=" in _structural(line) and _line_key(line) is None
 
 
 def _header_name(line: str) -> tuple[str, bool] | None:
@@ -607,50 +609,50 @@ def _is_blank_or_comment(line: str) -> bool:
     return not stripped or stripped.startswith("#")
 
 
-def _line_key(line: str) -> str | None:
-    """The key a `key = value` line defines, or None when the line is not one -- a comment,
-    a blank, a header, or a continuation line inside a multi-line value. A quoted key is
-    read to its own closing quote before the `=` is looked for, so a key containing `=`
-    (`"a=b" = ...`) is not split at the wrong place."""
+def _entry_parts(line: str) -> tuple[str, str] | None:
+    """`(key, value_text)` for a `key = value` line -- the key unescaped to its real text, the
+    value the raw text after the structural `=` -- or None when the line is not an entry (a
+    comment, a blank, a header, or a continuation line inside a multi-line value). This is the
+    one place the split lives; `_line_key` and `_value_after_key` are its two projections.
+
+    A quoted key -- basic (`"..."`) or literal (`'...'`) -- is read to its own closing quote
+    before the `=` is looked for, so a key containing `=` (`"a=b" = ...`) is split after the
+    whole key, not at the first `=`. A literal string carries no escapes; a basic one is
+    unescaped to its real text."""
     stripped = line.lstrip()
     if not stripped or stripped[0] in "#[":
         return None
     if stripped[0] in "\"'":
-        # A quoted key -- basic ("...") or literal ('...') -- is read to its own closing
-        # quote before the `=` is looked for, so a key containing `=` is not mis-split. A
-        # literal string carries no escapes; a basic one is unescaped to its real text.
         spans = _string_spans(stripped)
         if not spans or spans[0][0] != 0:
             return None
         start, stop = spans[0]
-        if not stripped[stop:].lstrip().startswith("="):
+        rest = stripped[stop:].lstrip()
+        if not rest.startswith("="):
             return None
         inner = stripped[start + 1 : stop - 1]
-        return _unescape(inner) if stripped[0] == '"' else inner
-    raw, sep, _ = line.partition("=")
+        key = _unescape(inner) if stripped[0] == '"' else inner
+        return key, rest[1:].strip()
+    raw, sep, rest = line.partition("=")
     if not sep:
         return None
     key = raw.strip()
-    return key if _BARE_KEY.fullmatch(key) else None
+    if not _BARE_KEY.fullmatch(key):
+        return None
+    return key, rest.strip()
+
+
+def _line_key(line: str) -> str | None:
+    """The key a `key = value` line defines, or None when the line is not one."""
+    parts = _entry_parts(line)
+    return parts[0] if parts is not None else None
 
 
 def _value_after_key(line: str) -> str | None:
-    """The text after a `key = value` line's structural `=`, or None. The key may be a
-    quoted string containing `=`, so the split is after the whole key, not at the first
-    `=` -- otherwise `"a=b" = "x"` would split inside the key."""
-    stripped = line.lstrip()
-    if not stripped or stripped[0] in "#[":
-        return None
-    if stripped[0] in "\"'":
-        spans = _string_spans(stripped)
-        if not spans or spans[0][0] != 0:
-            return None
-        rest = stripped[spans[0][1] :].lstrip()
-        return rest[1:].strip() if rest.startswith("=") else None
-    raw, sep, rest = line.partition("=")
-    if not sep or not _BARE_KEY.fullmatch(raw.strip()):
-        return None
-    return rest.strip()
+    """The raw text after a `key = value` line's structural `=`, or None when the line is not
+    an entry."""
+    parts = _entry_parts(line)
+    return parts[1] if parts is not None else None
 
 
 def _line_value_string(line: str) -> str | None:
@@ -720,11 +722,18 @@ def _bracket_delta(line: str) -> int:
     """`[` minus `]` on `line`, counting only brackets that are structure -- outside quoted
     strings and outside a trailing comment -- so a bracket inside a value or a `# note [`
     does not read as an opened or closed array."""
-    bare = _without_strings(line)
-    hash_at = bare.find("#")  # a `#` inside a string is already masked, so this is the real one
-    if hash_at != -1:
-        bare = bare[:hash_at]
+    bare = _structural(line)
     return bare.count("[") - bare.count("]")
+
+
+def _structural(line: str) -> str:
+    """`line` reduced to its structural punctuation: every quoted string's characters blanked
+    to spaces and any trailing comment dropped, so `[`, `]`, and `=` can be found without a
+    bracket or `=` inside a string, or a `# note`, being read as structure. A `#` inside a
+    string is blanked first, so the one that ends the line is the real comment."""
+    bare = _without_strings(line)
+    hash_at = bare.find("#")
+    return bare[:hash_at] if hash_at != -1 else bare
 
 
 def _without_strings(line: str) -> str:

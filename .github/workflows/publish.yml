@@ -3,7 +3,7 @@ name: publish
 # Publish to PyPI on a GitHub Release, via PyPI Trusted Publishing (OIDC): no API
 # token or password is stored anywhere -- GitHub mints a short-lived identity token
 # that PyPI verifies against the publisher registered for this repo (owner seokhoonj
-# / repo credbox / this workflow / environment "pypi").
+# / repo tomlite / this workflow / environment "pypi").
 #
 # Three jobs. `gate` runs the same reusable check that check.yml runs, on the
 # release commit, so a red build (a lint/type error, a broken

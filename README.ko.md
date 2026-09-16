@@ -10,26 +10,38 @@
 TOML 설정 파일의 값을 파이썬에서 고치되, 사용자가 써 둔 주석과 서식은 그대로 두는 패키지.
 바뀌는 줄만 다시 쓰므로 손으로 단 주석, 빈 줄, 정렬한 `=`이 편집 뒤에도 남습니다.
 
-```python
-from tomlite import TOMLEditor
-
-doc = TOMLEditor.load("config.toml")
-doc.set_table_key("server", "debug", False)
-doc.save("config.toml")
-```
-
-Windows·macOS·Linux에서 동작합니다. 설치되는 것은 이 패키지뿐이고, 다른 라이브러리를
-함께 끌어오지 않습니다.
-
 ## 1. 설치
 
 ```sh
 pip install tomlite
 ```
 
-Python 3.11 이상.
+의존성 없음. Python 3.11 이상. Windows·macOS·Linux에서 동작합니다.
 
-## 2. 지원 형식
+## 2. 빠른 시작
+
+```python
+from tomlite import TOMLEditor
+
+doc = TOMLEditor.load("config.toml")           # 파일이 없으면 빈 문서
+
+if not doc.has_in_array("user", match_field="name", match_value="bob"):
+    doc.append_to_array("user", [("name", "bob"), ("role", "guest")])
+doc.set_root_key("title", "My App", only_if_absent=True)
+doc.set_table_key("server", "debug", False)
+doc.save("config.toml")
+```
+
+값은 `tomllib`로 읽습니다:
+
+```python
+import tomllib
+
+with open("config.toml", "rb") as f:
+    config = tomllib.load(f)
+```
+
+## 3. 지원 형식
 
 프로그램이 관리하는 설정 파일이 쓰는 세 가지 형식을 편집합니다:
 
@@ -49,27 +61,6 @@ role = "admin"
 
 중첩 테이블, 인라인 테이블, 배열의 배열, 점으로 이어진 키, 다중행 문자열이 있으면 편집하지
 않고 `UnsupportedTOMLError`를 냅니다. 읽기와 `dumps`는 그대로 됩니다.
-
-## 3. 편집
-
-```python
-doc = TOMLEditor.load("config.toml")
-
-if not doc.has_in_array("user", match_field="name", match_value="bob"):
-    doc.append_to_array("user", [("name", "bob"), ("role", "guest")])
-doc.set_root_key("title", "My App", only_if_absent=True)
-doc.set_table_key("server", "debug", False)
-doc.save("config.toml")
-```
-
-값은 `tomllib`로 읽습니다:
-
-```python
-import tomllib
-
-with open("config.toml", "rb") as f:
-    config = tomllib.load(f)
-```
 
 ## 4. Round-trip
 

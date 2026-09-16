@@ -11,26 +11,38 @@ Change values in a TOML config file from Python, keeping the comments and layout
 wrote. tomlite rewrites only the lines that change, so hand-written comments, blank lines,
 and aligned `=` survive the edit.
 
-```python
-from tomlite import TOMLEditor
-
-doc = TOMLEditor.load("config.toml")
-doc.set_table_key("server", "debug", False)
-doc.save("config.toml")
-```
-
-Works on Windows, macOS, and Linux. It installs nothing but itself — no other libraries
-come along.
-
 ## 1. Install
 
 ```sh
 pip install tomlite
 ```
 
-Python 3.11+.
+No dependencies. Python 3.11+. Works on Windows, macOS, and Linux.
 
-## 2. Supported formats
+## 2. Quickstart
+
+```python
+from tomlite import TOMLEditor
+
+doc = TOMLEditor.load("config.toml")           # an empty document if the file is new
+
+if not doc.has_in_array("user", match_field="name", match_value="bob"):
+    doc.append_to_array("user", [("name", "bob"), ("role", "guest")])
+doc.set_root_key("title", "My App", only_if_absent=True)
+doc.set_table_key("server", "debug", False)
+doc.save("config.toml")
+```
+
+Read the values back with `tomllib`:
+
+```python
+import tomllib
+
+with open("config.toml", "rb") as f:
+    config = tomllib.load(f)
+```
+
+## 3. Supported formats
 
 tomlite edits three shapes — the ones a machine-managed config file uses:
 
@@ -50,27 +62,6 @@ role = "admin"
 
 A nested table, an inline table, an array of arrays, a dotted key, or a multi-line string
 raises `UnsupportedTOMLError` at the edit — reading and `dumps` still work.
-
-## 3. Editing
-
-```python
-doc = TOMLEditor.load("config.toml")
-
-if not doc.has_in_array("user", match_field="name", match_value="bob"):
-    doc.append_to_array("user", [("name", "bob"), ("role", "guest")])
-doc.set_root_key("title", "My App", only_if_absent=True)
-doc.set_table_key("server", "debug", False)
-doc.save("config.toml")
-```
-
-Read the values back with `tomllib`:
-
-```python
-import tomllib
-
-with open("config.toml", "rb") as f:
-    config = tomllib.load(f)
-```
 
 ## 4. Round-trip
 

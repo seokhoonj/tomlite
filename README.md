@@ -24,13 +24,15 @@ No dependencies. Python 3.11+. Works on Windows, macOS, and Linux.
 ```python
 from tomlite import TOMLEditor
 
-doc = TOMLEditor.load("config.toml")           # an empty document if the file is new
+doc = TOMLEditor.load("config.toml")                      # read the file, or an empty document if it is new
 
+# add a [[user]] block only if no user named "bob" is there yet
 if not doc.has_in_array("user", match_field="name", match_value="bob"):
     doc.append_to_array("user", [("name", "bob"), ("role", "guest")])
-doc.set_root_key("title", "My App", only_if_absent=True)
-doc.set_table_key("server", "debug", False)
-doc.save("config.toml")
+
+doc.set_root_key("title", "My App", only_if_absent=True)  # set title only if it is absent
+doc.set_table_key("server", "debug", False)               # change [server].debug to false
+doc.save("config.toml")                                   # write it back, keeping the comments and layout
 ```
 
 Read the values back with `tomllib`:

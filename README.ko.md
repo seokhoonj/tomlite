@@ -23,13 +23,15 @@ pip install tomlite
 ```python
 from tomlite import TOMLEditor
 
-doc = TOMLEditor.load("config.toml")           # 파일이 없으면 빈 문서
+doc = TOMLEditor.load("config.toml")                      # 파일 읽기, 없으면 빈 문서
 
+# "bob" 사용자가 아직 없을 때만 [[user]] 블록 추가
 if not doc.has_in_array("user", match_field="name", match_value="bob"):
     doc.append_to_array("user", [("name", "bob"), ("role", "guest")])
-doc.set_root_key("title", "My App", only_if_absent=True)
-doc.set_table_key("server", "debug", False)
-doc.save("config.toml")
+
+doc.set_root_key("title", "My App", only_if_absent=True)  # title이 없을 때만 설정 (있으면 그대로)
+doc.set_table_key("server", "debug", False)               # [server]의 debug를 false로 변경
+doc.save("config.toml")                                   # 주석·서식을 유지하며 디스크에 다시 쓰기
 ```
 
 값은 `tomllib`로 읽습니다:

@@ -30,7 +30,7 @@ pip install tomlite
 
 Python 3.11+.
 
-## 2. What it edits
+## 2. Supported formats
 
 tomlite edits three shapes — the ones a machine-managed config file uses:
 
@@ -41,7 +41,7 @@ title = "My App"                 # top-level key
 host = "localhost"
 port = 8080
 debug = true
-tags = ["web", "prod"]           # values: str, int, float, bool, one-line array
+tags = ["web", "prod"]           # values: str, int, float, bool, string array
 
 [[user]]                         # table array, entries matched by a field
 name = "alice"
@@ -74,10 +74,9 @@ with open("config.toml", "rb") as f:
 
 ## 4. Round-trip
 
-tomlite reads back anything it writes. A value or key with a bracket, quote, backslash,
-control character, or unusual line separator is escaped on write and restored on read.
-Updating an entry keeps its inline comment; other lines stay unchanged. Line endings are
-normalized to LF on load, so a CRLF file's endings change but its content does not.
+Any value is stored safely and reads back unchanged, even one with quotes, brackets, or
+backslashes. Changing a value keeps the comment on its line, an array you wrote across
+several lines stays multi-line, and the file's newline style (LF or CRLF) is preserved.
 
 ## 5. API
 
@@ -87,17 +86,18 @@ normalized to LF on load, so a CRLF file's endings change but its content does n
 | `TOMLEditor.loads(text)` | A document from a TOML string. |
 | `.dumps()` → `str` | The document as text. |
 | `.save(path)` | Write atomically, keeping an existing file's mode. |
-| `.set_root_key(key, value, *, only_if_absent=False)` | Set a top-level key. `only_if_absent` skips an existing value. |
+| `.set_root_key(key, value, *, only_if_absent=False, multiline=False)` | Set a top-level key. `only_if_absent` skips an existing value. |
 | `.unset_root_key(key)` → `bool` | Remove a top-level key. |
 | `.has_in_array(array, *, match_field, match_value)` → `bool` | Whether a `[[array]]` block has `match_field = match_value`. |
-| `.append_to_array(array, fields, *, before_table=None)` | Add a `[[array]]` block, optionally before a named table. |
-| `.update_in_array(array, *, match_field, match_value, field, value)` → `bool` | Set `field` in the matched block. |
+| `.append_to_array(array, fields, *, before_table=None, multiline=False)` | Add a `[[array]]` block, optionally before a named table. |
+| `.update_in_array(array, *, match_field, match_value, field, value, multiline=False)` → `bool` | Set `field` in the matched block. |
 | `.remove_from_array(array, *, match_field, match_value)` → `bool` | Remove the matched block. |
-| `.set_table_key(table, key, value)` | Set `key` in `[table]`, creating the table if needed. |
+| `.set_table_key(table, key, value, *, multiline=False)` | Set `key` in `[table]`, creating the table if needed. |
 | `.unset_table_key(table, key)` → `bool` | Remove `key` from `[table]`. |
 
 Values are `str`, `int`, `float`, `bool`, or a sequence of `str`. Match arguments are
-keyword-only.
+keyword-only. `multiline=True` writes an array value one item per line; replacing a
+multi-line array with a non-empty one keeps it multi-line.
 
 ## 6. License
 

@@ -29,9 +29,9 @@ pip install tomlite
 
 Python 3.11 이상.
 
-## 2. 다루는 형태
+## 2. 지원 형식
 
-프로그램이 관리하는 설정 파일이 쓰는 세 가지 형태를 편집합니다:
+프로그램이 관리하는 설정 파일이 쓰는 세 가지 형식을 편집합니다:
 
 ```toml
 title = "My App"                 # 최상위 키
@@ -40,7 +40,7 @@ title = "My App"                 # 최상위 키
 host = "localhost"
 port = 8080
 debug = true
-tags = ["web", "prod"]           # 값: str, int, float, bool, 한 줄 배열
+tags = ["web", "prod"]           # 값: str, int, float, bool, 문자열 배열
 
 [[user]]                         # 테이블 배열, 필드로 항목을 찾음
 name = "alice"
@@ -73,10 +73,9 @@ with open("config.toml", "rb") as f:
 
 ## 4. Round-trip
 
-tomlite가 써낸 값은 다시 읽어도 그대로입니다. 대괄호, 따옴표, 백슬래시, 제어문자, 특수한
-줄바꿈이 든 값이나 키는 저장할 때 이스케이프하고 읽을 때 되돌립니다. 항목을 바꾸면 그 줄의
-주석은 남고 나머지 줄은 그대로입니다. 불러올 때 줄바꿈을 LF로 바꾸므로 CRLF 파일은 줄바꿈만
-달라집니다.
+값에 따옴표, 대괄호, 백슬래시 같은 특수문자가 들어 있어도 tomlite가 안전하게 저장하고 그대로
+다시 읽습니다. 값을 바꿔도 그 줄에 달린 주석은 남고, 여러 줄로 쓴 배열은 여러 줄로 유지되며,
+줄바꿈 방식(LF·CRLF)도 원본 그대로 유지됩니다.
 
 ## 5. API
 
@@ -86,16 +85,17 @@ tomlite가 써낸 값은 다시 읽어도 그대로입니다. 대괄호, 따옴�
 | `TOMLEditor.loads(text)` | TOML 문자열에서 문서 생성. |
 | `.dumps()` → `str` | 문서를 텍스트로. |
 | `.save(path)` | 원자적 쓰기, 기존 파일 모드 유지. |
-| `.set_root_key(key, value, *, only_if_absent=False)` | 최상위 키 설정. `only_if_absent`는 값이 있으면 건너뜀. |
+| `.set_root_key(key, value, *, only_if_absent=False, multiline=False)` | 최상위 키 설정. `only_if_absent`는 값이 있으면 건너뜀. |
 | `.unset_root_key(key)` → `bool` | 최상위 키 제거. |
 | `.has_in_array(array, *, match_field, match_value)` → `bool` | `[[array]]` 블록에 `match_field = match_value`가 있는지. |
-| `.append_to_array(array, fields, *, before_table=None)` | `[[array]]` 블록 추가, 필요하면 특정 테이블 앞에. |
-| `.update_in_array(array, *, match_field, match_value, field, value)` → `bool` | 찾은 블록에서 `field` 설정. |
+| `.append_to_array(array, fields, *, before_table=None, multiline=False)` | `[[array]]` 블록 추가, 필요하면 특정 테이블 앞에. |
+| `.update_in_array(array, *, match_field, match_value, field, value, multiline=False)` → `bool` | 찾은 블록에서 `field` 설정. |
 | `.remove_from_array(array, *, match_field, match_value)` → `bool` | 찾은 블록 제거. |
-| `.set_table_key(table, key, value)` | `[table]`에 `key` 설정, 없으면 테이블 생성. |
+| `.set_table_key(table, key, value, *, multiline=False)` | `[table]`에 `key` 설정, 없으면 테이블 생성. |
 | `.unset_table_key(table, key)` → `bool` | `[table]`에서 `key` 제거. |
 
 값은 `str`, `int`, `float`, `bool`, `str` 시퀀스 중 하나입니다. match 인자는 키워드 전용입니다.
+`multiline=True`는 배열 값을 한 줄에 하나씩 씁니다. 여러 줄인 배열을 비어 있지 않은 배열로 바꾸면 여러 줄로 유지됩니다.
 
 ## 6. 라이선스
 

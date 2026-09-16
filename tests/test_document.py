@@ -109,7 +109,7 @@ def test_update_keeps_the_inline_comment_on_the_matched_line():
     assert doc.dumps() == '[contacts]\nlead = "new@x.com"   # the team lead\n'
 
 
-def test_updating_a_multiline_array_collapses_it_and_spares_the_next_entry():
+def test_updating_a_multiline_array_keeps_it_multiline_and_spares_the_next_entry():
     doc = _doc(
         "[contacts]\n"
         "team = [\n"
@@ -121,9 +121,101 @@ def test_updating_a_multiline_array_collapses_it_and_spares_the_next_entry():
     doc.set_table_key("contacts", "team", ("lead", "boss", "friend"))
     assert doc.dumps() == (
         "[contacts]\n"
-        'team = ["lead", "boss", "friend"]\n'
+        "team = [\n"
+        '    "lead",\n'
+        '    "boss",\n'
+        '    "friend",\n'
+        "]\n"
         'me = "you@naver.com"\n'
     )
+
+
+def test_updating_a_one_line_array_stays_one_line():
+    doc = _doc('[contacts]\nteam = ["lead", "boss"]\n')
+    doc.set_table_key("contacts", "team", ("lead", "boss", "friend"))
+    assert doc.dumps() == '[contacts]\nteam = ["lead", "boss", "friend"]\n'
+
+
+def test_multiline_array_keeps_its_indent_and_opener_comment():
+    doc = _doc(
+        "hosts = [  # production\n"
+        '  "alpha.internal.example.com",\n'
+        '  "bravo.internal.example.com",\n'
+        "]\n"
+    )
+    doc.set_root_key(
+        "hosts",
+        [
+            "alpha.internal.example.com",
+            "bravo.internal.example.com",
+            "charlie.internal.example.com",
+        ],
+    )
+    assert doc.dumps() == (
+        "hosts = [  # production\n"
+        '  "alpha.internal.example.com",\n'
+        '  "bravo.internal.example.com",\n'
+        '  "charlie.internal.example.com",\n'
+        "]\n"
+    )
+
+
+def test_multiline_array_keeps_the_closing_bracket_comment():
+    doc = _doc('xs = [\n  "a",\n  "b",\n]  # tail\n')
+    doc.set_root_key("xs", ["a", "b", "c"])
+    assert doc.dumps() == 'xs = [\n  "a",\n  "b",\n  "c",\n]  # tail\n'
+
+
+def test_replacing_an_empty_multiline_array_indents_items_four_spaces():
+    doc = _doc("xs = [\n]\n")  # no item line to read an indent from
+    doc.set_root_key("xs", ["a", "b"])
+    assert doc.dumps() == 'xs = [\n    "a",\n    "b",\n]\n'
+
+
+def test_a_multiline_array_tomlite_wrote_can_be_re_edited():
+    doc = _doc('xs = [\n  "a",\n  "b",\n]\n')
+    doc.set_root_key("xs", ["a", "b", "c"])  # stays multi-line
+    reloaded = TOMLEditor.loads(doc.dumps())  # our own multi-line output is not refused
+    reloaded.set_root_key("xs", ["a", "b", "c", "d"])
+    assert '  "d",\n' in reloaded.dumps()
+    assert _parsed(reloaded)["xs"] == ["a", "b", "c", "d"]
+
+
+def test_multiline_flag_authors_a_new_array_multi_line():
+    doc = TOMLEditor([])
+    doc.set_root_key("packages", ["alpha", "bravo", "charlie"], multiline=True)
+    assert doc.dumps() == (
+        "packages = [\n"
+        '    "alpha",\n'
+        '    "bravo",\n'
+        '    "charlie",\n'
+        "]\n"
+    )
+    assert _parsed(doc)["packages"] == ["alpha", "bravo", "charlie"]
+
+
+def test_a_new_array_is_one_line_by_default():
+    doc = TOMLEditor([])
+    doc.set_root_key("packages", ["alpha", "bravo"])
+    assert doc.dumps() == 'packages = ["alpha", "bravo"]\n'
+
+
+def test_multiline_flag_converts_a_one_line_array():
+    doc = TOMLEditor.loads('xs = ["a", "b"]\n')
+    doc.set_root_key("xs", ["a", "b", "c"], multiline=True)
+    assert doc.dumps() == 'xs = [\n    "a",\n    "b",\n    "c",\n]\n'
+
+
+def test_multiline_flag_works_on_set_table_key():
+    doc = TOMLEditor([])
+    doc.set_table_key("t", "xs", ["a", "b"], multiline=True)
+    assert doc.dumps() == '[t]\nxs = [\n    "a",\n    "b",\n]\n'
+
+
+def test_multiline_flag_is_ignored_for_a_scalar():
+    doc = TOMLEditor([])
+    doc.set_root_key("port", 8080, multiline=True)
+    assert doc.dumps() == "port = 8080\n"
 
 
 def test_a_group_is_written_as_a_one_line_array():
@@ -237,6 +329,30 @@ def test_append_before_an_array_of_tables_is_positioned_not_dropped_at_eof():
     assert text.index("b@x.com") < text.index("[[servers]]")
 
 
+def test_append_to_array_writes_a_multiline_field_when_asked():
+    doc = TOMLEditor([])
+    doc.append_to_array(
+        "accounts",
+        [("email", "x@y.com"), ("roles", ["admin", "user"])],
+        multiline=True,
+    )
+    assert doc.dumps() == (
+        "[[accounts]]\n"
+        'email = "x@y.com"\n'
+        "roles = [\n"
+        '    "admin",\n'
+        '    "user",\n'
+        "]\n"
+    )
+    assert _parsed(doc)["accounts"] == [{"email": "x@y.com", "roles": ["admin", "user"]}]
+
+
+def test_append_to_array_field_array_is_one_line_by_default():
+    doc = TOMLEditor([])
+    doc.append_to_array("accounts", [("roles", ["admin", "user"])])
+    assert doc.dumps() == '[[accounts]]\nroles = ["admin", "user"]\n'
+
+
 # -- the round-trip promise (values/keys with TOML-special characters) ------
 
 
@@ -305,11 +421,31 @@ def test_a_value_ending_in_a_backslash_is_matched_by_its_field():
 # -- I/O --------------------------------------------------------------------
 
 
-def test_crlf_input_is_normalized_to_lf():
+def test_crlf_input_keeps_its_crlf_endings():
     doc = TOMLEditor.loads('[contacts]\r\nlead = "lead@x.com"\r\n')
     doc.set_table_key("contacts", "boss", "boss@x.com")
-    assert "\r" not in doc.dumps()
+    out = doc.dumps()
+    assert out.count("\n") == out.count("\r\n")  # every newline is CRLF, the added line included
+    assert 'boss = "boss@x.com"\r\n' in out
     assert _parsed(doc)["contacts"] == {"lead": "lead@x.com", "boss": "boss@x.com"}
+
+
+def test_save_preserves_crlf_endings(tmp_path: Path):
+    path = tmp_path / "c.toml"
+    path.write_bytes(b'a = 1\r\nb = 2\r\n')
+    doc = TOMLEditor.load(path)
+    doc.set_root_key("a", 9)
+    doc.save(path)
+    assert path.read_bytes() == b"a = 9\r\nb = 2\r\n"  # edited and untouched lines both CRLF
+
+
+def test_save_preserves_lf_endings(tmp_path: Path):
+    path = tmp_path / "c.toml"
+    path.write_bytes(b"a = 1\nb = 2\n")
+    doc = TOMLEditor.load(path)
+    doc.set_root_key("a", 9)
+    doc.save(path)
+    assert path.read_bytes() == b"a = 9\nb = 2\n"  # LF stays LF, no OS translation to CRLF
 
 
 def test_save_is_atomic_and_preserves_mode(tmp_path: Path):
@@ -569,11 +705,14 @@ def test_every_control_and_special_character_round_trips(char):
     assert _parsed(doc)["t"]["k"] == f"a{char}b"  # valid TOML, exact value back
 
 
-@pytest.mark.parametrize("text", ["", 'k = "v"', "k = \"v\"\n", "k = \"v\"\r\n"])
-def test_loads_then_dumps_is_idempotent_and_lf_normalized(text):
+@pytest.mark.parametrize("text", ["", 'k = "v"', 'k = "v"\n', 'k = "v"\r\n'])
+def test_loads_then_dumps_is_idempotent_and_keeps_the_newline_style(text):
     once = TOMLEditor.loads(text).dumps()
-    assert "\r" not in once
     assert TOMLEditor.loads(once).dumps() == once  # a second round changes nothing
+    if "\r\n" in text:
+        assert once.count("\n") == once.count("\r\n")  # CRLF input stays CRLF
+    elif once:
+        assert "\r" not in once  # LF (or newline-less) input emits LF
 
 
 def test_set_root_key_only_if_absent_ignores_a_same_named_key_inside_a_table():

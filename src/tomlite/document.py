@@ -13,14 +13,14 @@ the shape a machine-managed config file takes:
 - a `[[table array]]` of entries, each matched by one of its fields,
 - a flat `[table]` of keys.
 
-The values it reads and writes are scalars (string, integer, float, boolean) and one-line
-arrays of strings. It **round-trips anything it is willing to emit**: strings are written with
-spec-complete escaping (every control character escaped) and read back the same, so an
-address or a name containing a bracket, an equals sign, a quote, a backslash, or a control
-character cannot corrupt the file on a later edit. What it does **not** support is a value
-it never emits: a nested array, an inline table, or a multi-line value other than a
-one-per-line array of scalars. Hand-writing one of those and then editing the file with
-this module is out of contract.
+The values it reads and writes are scalars (string, integer, float, boolean) and arrays of
+strings -- on one line, or one item per line. It **round-trips anything it is willing to
+emit**: strings are written with spec-complete escaping (every control character escaped) and
+read back the same, so an address or a name containing a bracket, an equals sign, a quote, a
+backslash, or a control character cannot corrupt the file on a later edit. What it does
+**not** support is a value it never emits: a nested array, an inline table, or a multi-line
+value other than a one-per-line array of strings. Hand-writing one of those and then editing
+the file with this module is out of contract.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ __all__ = [
     "UnsupportedTOMLError",
 ]
 
-# What this module can write: a scalar, or a one-line array of strings. `bool` is an `int`
+# What this module can write: a scalar, or an array of strings. `bool` is an `int`
 # subclass and `float` is separate, so `_emit_value` tests them in the right order.
 TOMLScalar = str | int | float | bool
 TOMLValue = TOMLScalar | Sequence[str]
@@ -84,8 +84,12 @@ class TOMLEditor:
     constructor takes the raw line list, which is handy in tests).
     """
 
-    def __init__(self, lines: list[str]) -> None:
+    def __init__(self, lines: list[str], newline: str = "\n") -> None:
         self._lines = lines
+        # The newline `dumps`/`save` re-emit -- LF by default, or the CRLF of the file this was
+        # loaded from, so editing a CRLF file leaves it CRLF rather than silently rewriting every
+        # line ending. The lines themselves never carry it (they are split on it at load).
+        self._newline = newline
         # Scanned once: a construct outside the flat grammar (a multi-line string, an array of
         # arrays, a non-bare-path header, an unparseable key) makes the line scan unsafe, so the
         # editing operations refuse (reading -- dumps/save -- stays fine). tomlite never emits
@@ -102,7 +106,11 @@ class TOMLEditor:
             UnsupportedTOMLError: the file is not valid UTF-8.
         """
         try:
-            text = Path(path).read_text(encoding="utf-8")
+            # newline="" keeps the file's own CR/LF bytes so loads can detect and preserve them,
+            # instead of the default universal-newline translation to "\n". (Path.open takes
+            # newline on every supported Python; Path.read_text only gained it in 3.13.)
+            with Path(path).open(encoding="utf-8", newline="") as handle:
+                text = handle.read()
         except FileNotFoundError:
             return cls([])
         except UnicodeDecodeError as err:
@@ -111,20 +119,23 @@ class TOMLEditor:
 
     @classmethod
     def loads(cls, text: str) -> TOMLEditor:
-        """A document from TOML `text`. Line endings are normalized to `\\n` -- and only a
-        real `\\n` (or `\\r\\n`/`\\r`) is a line boundary, matching what `dumps` joins on, so
-        an exotic in-string separator like U+2028 is not mistaken for the end of a line."""
+        """A document from TOML `text`. The file's newline style is detected -- CRLF (`\\r\\n`)
+        if it uses one, a lone `\\r` if it uses that, else LF -- and re-emitted by `dumps`/`save`,
+        so editing a CRLF file leaves it CRLF. Only a real newline is a line boundary, so an
+        exotic in-string separator like U+2028 is not mistaken for the end of a line."""
+        newline = "\r\n" if "\r\n" in text else "\r" if "\r" in text else "\n"
         normalized = text.replace("\r\n", "\n").replace("\r", "\n")
         lines = normalized.split("\n")
         if lines and lines[-1] == "":
             lines.pop()  # a trailing newline is the file's, not an empty final line
-        return cls(lines)
+        return cls(lines, newline)
 
     def dumps(self) -> str:
-        """The document as text, with the single trailing newline a text file wants."""
+        """The document as text, joined with the document's newline (LF, or the CRLF of the file
+        it was loaded from) and ending in the single trailing newline a text file wants."""
         if not self._lines:
             return ""
-        return "\n".join(self._lines) + "\n"
+        return self._newline.join(self._lines) + self._newline
 
     def save(self, path: str | Path) -> None:
         """Write the document to `path` atomically, preserving an existing file's mode.
@@ -136,7 +147,9 @@ class TOMLEditor:
         untouched, and a concurrent save cannot clobber the temp. An existing file keeps its
         mode; a new one is created owner-only (0600, the temp's default). A symlink or
         hardlink at `path` is *replaced* (the atomic rename swaps the path), not written
-        through, so the previous target file is left untouched.
+        through, so the previous target file is left untouched. The document's newline style
+        (LF, or the CRLF of the file it was loaded from) is written verbatim, without the
+        OS-specific translation a text file would otherwise apply.
 
         Raises:
             OSError: the temp write, chmod, or rename failed.
@@ -152,8 +165,8 @@ class TOMLEditor:
         )
         tmp = Path(tmp_name)
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(self.dumps())
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+                handle.write(self.dumps())  # newline="" so dumps's own endings are not retranslated
             if mode is not None:
                 os.chmod(tmp, mode)  # the mode travels with the file, so no post-rename gap
             os.replace(tmp, target)
@@ -164,21 +177,28 @@ class TOMLEditor:
     # -- top-level key -------------------------------------------------------
 
     def set_root_key(
-        self, key: str, value: TOMLValue, *, only_if_absent: bool = False
+        self,
+        key: str,
+        value: TOMLValue,
+        *,
+        only_if_absent: bool = False,
+        multiline: bool = False,
     ) -> None:
         """Set a top-level `key = value`, above any table. `only_if_absent=True` leaves an
         existing value untouched (so a first entry can seed a default without a later one
-        silently overwriting it).
+        silently overwriting it). `multiline=True` writes an array value one item per line;
+        replacing a multi-line array with a non-empty one keeps it multi-line.
 
         Raises:
             UnsupportedTOMLError: the document is outside the flat grammar, or `key` is
                 already declared as a table (a TOML key and table cannot share a name).
         """
         entry = self._root_entry(key)
-        line = f"{_emit_key(key)} = {_emit_value(value)}"
         if entry is not None:
             if not only_if_absent:
-                self._replace_entry(*entry, line)
+                self._lines[entry[0] : entry[1]] = self._entry_lines(
+                    key, value, multiline=multiline, old=entry
+                )
             return
         if self._table_declares(key):
             raise UnsupportedTOMLError(
@@ -187,7 +207,7 @@ class TOMLEditor:
         # A blank line after it only when a non-blank line follows, so a one-line file is
         # not left with a trailing blank and a doc already starting blank gains no second.
         pad = [""] if self._lines and self._lines[0].strip() else []
-        self._lines[0:0] = [line, *pad]
+        self._lines[0:0] = [*self._entry_lines(key, value, multiline=multiline), *pad]
 
     # -- [[table array]] -----------------------------------------------------
 
@@ -204,11 +224,13 @@ class TOMLEditor:
         fields: Sequence[tuple[str, TOMLValue]],
         *,
         before_table: str | None = None,
+        multiline: bool = False,
     ) -> None:
         """Append a new `[[array]]` block with `fields` in the given order. When
         `before_table` names a header -- a plain `[table]` or a `[[table array]]` -- the block
         is inserted before it (so related arrays stay grouped above it); when it names nothing,
-        or is omitted, the block goes at end of file.
+        or is omitted, the block goes at end of file. `multiline=True` writes any array-valued
+        field one item per line.
 
         Raises:
             UnsupportedTOMLError: the document is outside the flat grammar; `array` is not a
@@ -238,7 +260,7 @@ class TOMLEditor:
             if not (isinstance(field, tuple) and len(field) == 2):
                 raise TypeError(f"each field must be a (key, value) pair, not {field!r}")
             key, val = field
-            block.append(f"{_emit_key(key)} = {_emit_value(val)}")
+            block.extend(self._entry_lines(key, val, multiline=multiline))
         header = self._before_table_index(before_table) if before_table else None
         if header is None:  # end of file -- a leading blank if the last line is not one
             at = len(self._lines)
@@ -261,32 +283,40 @@ class TOMLEditor:
         match_value: str,
         field: str,
         value: TOMLValue,
+        multiline: bool = False,
     ) -> bool:
         """In the `[[array]]` block where `match_field = match_value`, set `field` --
         replacing its line if present, else inserting it after the matched field. Returns
-        whether a matching block was found. All match/field arguments are keyword-only:
+        whether a matching block was found. `multiline=True` writes an array value one item
+        per line; replacing a multi-line array with a non-empty one keeps it multi-line. All
+        match/field arguments are keyword-only:
         `update_in_array("accounts", "email", x, "alias", y)` is four interchangeable
         strings, and a swap would silently write the wrong field."""
         block = self._array_entry(array, match_field, match_value)
         if block is None:
             return False
         start, end = block
-        line = f"{_emit_key(field)} = {_emit_value(value)}"
         anchor = start  # after the header, if the field is not already present
         for key, first, last in self._entries(start + 1, end):
             if key == field:
-                self._replace_entry(first, last, line)
+                self._lines[first:last] = self._entry_lines(
+                    field, value, multiline=multiline, old=(first, last)
+                )
                 return True
             if key == match_field:
                 anchor = first
-        self._lines.insert(anchor + 1, line)
+        self._lines[anchor + 1 : anchor + 1] = self._entry_lines(field, value, multiline=multiline)
         return True
 
     # -- [table] key ---------------------------------------------------------
 
-    def set_table_key(self, table: str, key: str, value: TOMLValue) -> None:
+    def set_table_key(
+        self, table: str, key: str, value: TOMLValue, *, multiline: bool = False
+    ) -> None:
         """Set `key = value` inside `[table]`, replacing an existing entry or adding one,
-        and opening the table at end of file when it does not exist yet.
+        and opening the table at end of file when it does not exist yet. `multiline=True`
+        writes an array value one item per line; replacing a multi-line array with a non-empty
+        one keeps it multi-line.
 
         Raises:
             UnsupportedTOMLError: the document is outside the flat grammar; `table` is not a
@@ -294,7 +324,6 @@ class TOMLEditor:
                 top-level key or an array-of-tables (a TOML name cannot be two kinds at once).
         """
         _require_bare_path(table)
-        line = f"{_emit_key(key)} = {_emit_value(value)}"
         header = self._header_index(table)
         if header is None:
             if self._root_entry(table) is not None:
@@ -308,14 +337,16 @@ class TOMLEditor:
                     f"also open it as a table"
                 )
             pad = [""] if self._lines and self._lines[-1].strip() else []
-            self._lines += [*pad, f"[{table}]", line]
+            self._lines += [*pad, f"[{table}]", *self._entry_lines(key, value, multiline=multiline)]
             return
         end = self._table_end(header + 1)
         for entry_key, first, last in self._entries(header + 1, end):
             if entry_key == key:
-                self._replace_entry(first, last, line)
+                self._lines[first:last] = self._entry_lines(
+                    key, value, multiline=multiline, old=(first, last)
+                )
                 return
-        self._lines.insert(end, line)
+        self._lines[end:end] = self._entry_lines(key, value, multiline=multiline)
 
     # -- removal -------------------------------------------------------------
 
@@ -356,11 +387,41 @@ class TOMLEditor:
                 return True
         return False
 
-    def _replace_entry(self, first: int, last: int, line: str) -> None:
-        """Replace the entry spanning `lines[first:last]` with `line`, carrying over the
-        trailing comment the reader left on the entry's first line so a value change keeps
-        its note."""
-        self._lines[first:last] = [line + _trailing_comment(self._lines[first])]
+    def _entry_lines(
+        self,
+        key: str,
+        value: TOMLValue,
+        *,
+        multiline: bool,
+        old: tuple[int, int] | None = None,
+    ) -> list[str]:
+        """The line(s) for `key = value`. `old`, when given, is the `(first, last)` span this
+        replaces -- the trailing comment on its opening line is carried over (and, when the
+        replacement itself stays multi-line, the one on its closing `]` line too), and its
+        indentation is reused. An array value is written one item per line when `multiline` is
+        asked for or the entry it replaces was
+        already multi-line -- so a hand-formatted array (say, one long string per line) is neither
+        collapsed nor forced flat -- otherwise on one line. A fresh multi-line array is indented
+        four spaces. Comments on the old *item* lines are not kept: replacing the value replaces
+        those lines."""
+        comment = _trailing_comment(self._lines[old[0]]) if old is not None else ""
+        was_multiline = old is not None and old[1] - old[0] > 1
+        if isinstance(value, (list, tuple)) and value and (multiline or was_multiline):
+            item_indent, close_indent, close_comment = "    ", "", ""
+            if was_multiline:
+                first, last = old  # type: ignore[misc]
+                close_indent = _leading_space(self._lines[last - 1])
+                close_comment = _trailing_comment(self._lines[last - 1])
+                for index in range(first + 1, last - 1):  # the first real item line's indent
+                    if not _is_blank_or_comment(self._lines[index]):
+                        item_indent = _leading_space(self._lines[index])
+                        break
+            return [
+                f"{_emit_key(key)} = [{comment}",
+                *(f"{item_indent}{item}," for item in _emit_str_array(value)),
+                f"{close_indent}]{close_comment}",
+            ]
+        return [f"{_emit_key(key)} = {_emit_value(value)}{comment}"]
 
     def _drop(self, start: int, end: int) -> None:
         """Delete `lines[start:end]` plus one adjacent blank separator -- the one before it,
@@ -595,8 +656,9 @@ def _header_name(line: str) -> tuple[str, bool] | None:
 
 def _is_header(line: str) -> bool:
     """Whether `line` is a table header (`[contacts]`, `[[accounts]]`, ...). Within the
-    supported grammar a value line never starts with `[`: strings are quoted, scalars are
-    not bracketed, and the arrays this module writes are one line and keyed."""
+    supported grammar a value line never starts with `[`: strings are quoted, scalars are not
+    bracketed, and an array this module writes leads with the key (`k = [`) or, when multi-line,
+    with an indented string item or the closing `]` -- never a bare `[`."""
     return line.lstrip().startswith("[")
 
 
@@ -777,17 +839,32 @@ def _emit_value(value: TOMLValue) -> str:
     if isinstance(value, str):
         return _emit_string(value)
     if isinstance(value, (list, tuple)):  # an ordered sequence of strings -> one-line array
-        for index, one in enumerate(value):
-            if not isinstance(one, str):
-                raise TypeError(
-                    f"a TOML array value must be a list/tuple of str; item {index} is "
-                    f"{type(one).__name__}"
-                )
-        return "[" + ", ".join(_emit_string(one) for one in value) + "]"
+        return "[" + ", ".join(_emit_str_array(value)) + "]"
     raise TypeError(
         f"unsupported TOML value type {type(value).__name__}; expected str, int, float, "
         f"bool, or a list/tuple of str"
     )
+
+
+def _emit_str_array(value: Sequence[str]) -> list[str]:
+    """The escaped TOML string for each item of `value`, validating each is a `str` (a TOML
+    array tomlite writes is a sequence of strings). Shared by the one-line and multi-line array
+    emitters so the type check and escaping live in one place."""
+    items: list[str] = []
+    for index, one in enumerate(value):
+        if not isinstance(one, str):
+            raise TypeError(
+                f"a TOML array value must be a list/tuple of str; item {index} is "
+                f"{type(one).__name__}"
+            )
+        items.append(_emit_string(one))
+    return items
+
+
+def _leading_space(line: str) -> str:
+    """The run of leading whitespace on `line` -- used to re-emit a multi-line array's items at
+    the same indentation the reader gave them."""
+    return line[: len(line) - len(line.lstrip())]
 
 
 def _emit_string(value: str) -> str:

@@ -61,8 +61,8 @@ name = "alice"
 role = "admin"
 ```
 
-중첩 테이블, 인라인 테이블, 배열의 배열, 점으로 이어진 키, 다중행 문자열이 있으면 편집하지
-않고 `UnsupportedTOMLError`를 냅니다. 읽기와 `dumps`는 그대로 됩니다.
+줄 스캐너가 안전하게 편집할 수 없는 구성 — 다중행 문자열이나 점으로 이어진 키(`a.b = 1`) —
+이 있으면 손상 위험 대신 `UnsupportedTOMLError`를 냅니다. 읽기와 `dumps`는 그대로 됩니다.
 
 ## 4. Round-trip
 

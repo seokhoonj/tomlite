@@ -62,8 +62,9 @@ name = "alice"
 role = "admin"
 ```
 
-A nested table, an inline table, an array of arrays, a dotted key, or a multi-line string
-raises `UnsupportedTOMLError` at the edit — reading and `dumps` still work.
+A construct its line scanner can't edit safely — a multi-line string or a dotted key
+(`a.b = 1`) — raises `UnsupportedTOMLError` instead of risking corruption; reading and
+`dumps` still work.
 
 ## 4. Round-trip
 

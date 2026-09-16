@@ -11,8 +11,9 @@ edit changes only the lines it touches, so hand-written comments, blank lines, a
     doc.save("config.toml")
 
 It is not a general TOML library -- it edits the shape a machine-managed config file takes
-(a top-level key, `[[table array]]` entries, a flat `[table]`), with scalar and one-line
-string-array values, and round-trips anything it emits. See `TOMLEditor` for the contract.
+(a top-level key, `[[table array]]` entries, a flat `[table]`), with scalar and string-array
+values (on one line or one per line), and round-trips anything it emits. See `TOMLEditor`
+for the contract.
 """
 
 from tomlite.document import (

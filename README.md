@@ -5,28 +5,34 @@
 [![Python](https://img.shields.io/pypi/pyversions/tomlite)](https://pypi.org/project/tomlite/)
 [![License](https://img.shields.io/pypi/l/tomlite)](https://github.com/seokhoonj/tomlite/blob/main/LICENSE)
 
-tomlite edits a TOML config file without touching its comments or layout. Only the lines
-that change are rewritten, so comments, blank lines, and aligned `=` stay as they were.
-
 **English** | [한국어](README.ko.md)
+
+Change values in a TOML config file from Python, keeping the comments and layout the user
+wrote. tomlite rewrites only the lines that change, so hand-written comments, blank lines,
+and aligned `=` survive the edit.
 
 ```python
 from tomlite import TOMLEditor
 
 doc = TOMLEditor.load("config.toml")
-doc.set_table_key("server", "port", 9090)
+doc.set_table_key("server", "debug", False)
 doc.save("config.toml")
 ```
 
-## Install
+Works on Windows, macOS, and Linux. It installs nothing but itself — no other libraries
+come along.
+
+## 1. Install
 
 ```sh
 pip install tomlite
 ```
 
-No dependencies. Python 3.11+.
+Python 3.11+.
 
-## Supported shapes
+## 2. What it edits
+
+tomlite edits three shapes — the ones a machine-managed config file uses:
 
 ```toml
 title = "My App"                 # top-level key
@@ -43,9 +49,37 @@ role = "admin"
 ```
 
 A nested table, an inline table, an array of arrays, a dotted key, or a multi-line string
-raises `UnsupportedTOMLError`.
+raises `UnsupportedTOMLError` at the edit — reading and `dumps` still work.
 
-## API
+## 3. Editing
+
+```python
+doc = TOMLEditor.load("config.toml")
+
+if not doc.has_in_array("user", match_field="name", match_value="bob"):
+    doc.append_to_array("user", [("name", "bob"), ("role", "guest")])
+doc.set_root_key("title", "My App", only_if_absent=True)
+doc.set_table_key("server", "debug", False)
+doc.save("config.toml")
+```
+
+Read the values back with `tomllib`:
+
+```python
+import tomllib
+
+with open("config.toml", "rb") as f:
+    config = tomllib.load(f)
+```
+
+## 4. Round-trip
+
+tomlite reads back anything it writes. A value or key with a bracket, quote, backslash,
+control character, or unusual line separator is escaped on write and restored on read.
+Updating an entry keeps its inline comment; other lines stay unchanged. Line endings are
+normalized to LF on load, so a CRLF file's endings change but its content does not.
+
+## 5. API
 
 | Method | Description |
 |---|---|
@@ -65,34 +99,6 @@ raises `UnsupportedTOMLError`.
 Values are `str`, `int`, `float`, `bool`, or a sequence of `str`. Match arguments are
 keyword-only.
 
-```python
-doc = TOMLEditor.load("config.toml")
+## 6. License
 
-if not doc.has_in_array("user", match_field="name", match_value="bob"):
-    doc.append_to_array("user", [("name", "bob"), ("role", "guest")])
-doc.set_root_key("title", "My App", only_if_absent=True)
-doc.set_table_key("server", "port", 9090)
-doc.save("config.toml")
-```
-
-## Reading
-
-Read the file with `tomllib`:
-
-```python
-import tomllib
-
-with open("config.toml", "rb") as f:
-    config = tomllib.load(f)
-```
-
-## Round-trip
-
-tomlite reads back anything it writes. A value or key with a bracket, quote, backslash,
-control character, or unusual line separator is escaped on write and restored on read.
-Updating an entry keeps its inline comment; other lines stay unchanged. Line endings are
-normalized to LF on load.
-
-## License
-
-MIT
+[MIT](LICENSE)

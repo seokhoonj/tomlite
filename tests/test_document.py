@@ -829,6 +829,172 @@ def test_set_table_key_allows_opening_a_table_whose_subtable_exists():
     assert _parsed(doc) == {"u": {"x": {"a": 1}, "b": 2}}
 
 
+def test_append_onto_a_dotted_header_table_is_refused_not_corrupted():
+    # [accounts.personal] makes `accounts` an implicit table, so appending [[accounts]] would
+    # make one name two kinds -- tomllib rejects it. (The legacy-config shape that first
+    # surfaced this.) Must refuse and leave the file untouched.
+    src = '[accounts.personal]\nemail = "x@naver.com"\n'
+    doc = TOMLEditor.loads(src)
+    with pytest.raises(UnsupportedTOMLError):
+        doc.append_to_array("accounts", [("email", "y@gmail.com")])
+    assert doc.dumps() == src  # rolled back
+
+
+def test_dotted_table_name_colliding_with_a_root_key_is_refused():
+    doc = TOMLEditor.loads("x = 1\n")
+    with pytest.raises(UnsupportedTOMLError):
+        doc.set_table_key("x.y.z", "k", 2)  # [x.y.z] would make root key x a table
+    assert doc.dumps() == "x = 1\n"
+
+
+def test_set_table_key_field_that_collides_with_an_array_of_tables_is_refused():
+    doc = TOMLEditor.loads("[[a.b]]\nx = 1\n")  # a.b is an array-of-tables
+    with pytest.raises(UnsupportedTOMLError):
+        doc.set_table_key("a", "b", 1)  # [a] with key b would set a.b to a scalar
+    assert doc.dumps() == "[[a.b]]\nx = 1\n"
+
+
+def test_append_to_array_rejects_duplicate_field_keys():
+    with pytest.raises(ValueError, match="duplicate field key"):
+        TOMLEditor([]).append_to_array("t", [("a", "1"), ("a", "2")])
+
+
+def test_a_refused_edit_leaves_the_document_untouched():
+    doc = TOMLEditor.loads('x = 1\ny = 2\n')
+    with pytest.raises(UnsupportedTOMLError):
+        doc.set_table_key("x.z", "k", 3)
+    assert doc.dumps() == "x = 1\ny = 2\n"  # atomic: nothing partially written
+
+
+def test_no_single_edit_ever_emits_invalid_toml_fuzz():
+    # The load-bearing invariant: for any valid input and any single edit (every writer AND
+    # every remover), the result parses in tomllib OR the edit is refused -- never silently
+    # corrupt. A compact deterministic fuzz so a future change that reopens a corruption path
+    # fails here.
+    import random
+
+    def scalar() -> str:
+        return random.choice(['1', '"s"', "'lit'", '"a=b"', "0xFF", 'true', '["p","q"]'])
+
+    def doc_text() -> str:
+        lines = []
+        for _ in range(random.randint(0, 3)):
+            lines.append(random.choice([f'{random.choice(["a", "x"])} = {scalar()}', "", "# c"]))
+        for _ in range(random.randint(1, 5)):
+            r = random.random()
+            if r < 0.4:
+                lines.append(f'{random.choice(["a", "name", "x"])} = {scalar()}')
+            elif r < 0.7:
+                lines.append(f'[{random.choice(["t", "a.b", "x.y", "x.y.z"])}]')
+            else:
+                lines.append(f'[[{random.choice(["accounts", "x", "a.b"])}]]')
+        return "\n".join(lines) + "\n"
+
+    names = ["a", "x", "a.b", "x.y", "x.y.z", "accounts"]
+    random.seed(2026)
+    for _ in range(4000):
+        src = doc_text()
+        try:
+            tomllib.loads(src)  # only edit valid TOML
+        except tomllib.TOMLDecodeError:
+            continue
+        doc = TOMLEditor.loads(src)
+        name = random.choice(names)
+        op = random.random()
+        try:
+            if op < 0.24:
+                doc.set_root_key(name, "v")
+            elif op < 0.44:
+                doc.set_table_key(name, random.choice(["k", "a", "b"]), 1)
+            elif op < 0.62:
+                doc.append_to_array(name, [("a", "1"), (random.choice(["b", "c"]), "y")])
+            elif op < 0.78:
+                doc.update_in_array(name, match_field="a", match_value="1", field="k", value=2)
+            elif op < 0.85:  # removers too -- they carry no net, so the fuzz must cover them
+                doc.unset_root_key(name)
+            elif op < 0.93:
+                doc.unset_table_key(name, random.choice(["k", "a", "b"]))
+            else:
+                doc.remove_from_array(name, match_field="a", match_value="1")
+        except (UnsupportedTOMLError, TypeError, ValueError):
+            continue  # refused -- the safe branch of handle-or-refuse
+        tomllib.loads(doc.dumps())  # MUST parse; raises here if a corruption path reopened
+
+
+def test_a_setter_edit_produces_exactly_the_expected_dict_fuzz():
+    # Beyond validity: the edited file must parse to exactly the RIGHT dict -- the value set,
+    # nothing else lost or changed -- or be refused. Guards against a valid-but-wrong edit
+    # (silent data loss / wrong value). Single-segment names so the expected dict is exact.
+    import copy
+    import random
+
+    def kind(x: object) -> str | None:
+        if isinstance(x, dict):
+            return "table"
+        if isinstance(x, list) and x and all(isinstance(e, dict) for e in x):
+            return "aot"
+        if x is None:
+            return None
+        return "value"  # scalar, scalar-array, or empty array = an inline value
+
+    def scalar() -> str:
+        return random.choice(["1", '"s"', "true", '"a=b"'])
+
+    def doc_text() -> str:
+        lines: list[str] = []
+        for _ in range(random.randint(0, 2)):
+            lines.append(random.choice([f'{random.choice(["a", "x"])} = {scalar()}', ""]))
+        for _ in range(random.randint(0, 3)):
+            r = random.random()
+            if r < 0.4:
+                lines.append(f'[{random.choice(["srv", "g"])}]\np = {scalar()}')
+            elif r < 0.7:
+                lines.append(f'[[{random.choice(["accounts", "items"])}]]\nid = {scalar()}')
+            else:
+                lines.append(f'{random.choice(["a", "x"])} = {random.choice([scalar(), chr(91) + chr(34) + "p" + chr(34) + chr(93)])}')
+        return "\n".join(lines) + "\n"
+
+    names = ["a", "x", "srv", "accounts", "items", "g", "new"]
+    random.seed(7)
+    for _ in range(3000):
+        src = doc_text()
+        try:
+            d0 = tomllib.loads(src)
+        except tomllib.TOMLDecodeError:
+            continue
+        doc = TOMLEditor.loads(src)
+        name = random.choice(names)
+        key = random.choice(["p", "k", "name"])
+        op = random.random()
+        k0 = kind(d0.get(name))
+        expected = copy.deepcopy(d0)
+        refuse = False
+        try:
+            if op < 0.34:  # set_root_key: reassigns a top-level key; refused only over a table/aot
+                if k0 in ("table", "aot"):
+                    refuse = True
+                else:
+                    expected[name] = "V"
+                doc.set_root_key(name, "V")
+            elif op < 0.67:  # set_table_key: opens/extends [name]; refused over a value or aot
+                if k0 in ("aot", "value"):
+                    refuse = True
+                else:
+                    expected.setdefault(name, {})[key] = 1
+                doc.set_table_key(name, key, 1)
+            else:  # append_to_array: adds a [[name]] block; refused over a table or value
+                if k0 in ("table", "value"):
+                    refuse = True
+                else:
+                    expected[name] = (list(d0[name]) if k0 == "aot" else []) + [{"id": "x"}]
+                doc.append_to_array(name, [("id", "x")])
+        except (UnsupportedTOMLError, TypeError, ValueError):
+            assert refuse, f"over-refused a valid edit: {src!r} name={name} op={op}"
+            continue
+        assert not refuse, f"should have refused: {src!r} name={name} op={op}"
+        assert tomllib.loads(doc.dumps()) == expected, f"wrong result for {src!r} name={name}"
+
+
 def test_append_to_array_refuses_a_name_that_is_a_table():
     doc = TOMLEditor.loads('[u]\nid = "u0"\n')
     with pytest.raises(UnsupportedTOMLError, match="already a table"):

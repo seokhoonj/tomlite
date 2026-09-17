@@ -21,15 +21,26 @@ backslash, or a control character cannot corrupt the file on a later edit. What 
 **not** support is a value it never emits: a nested array, an inline table, or a multi-line
 value other than a one-per-line array of strings. Hand-writing one of those and then editing
 the file with this module is out of contract.
+
+Every structural edit is re-parsed with `tomllib` before it is kept -- an edit that would
+produce invalid TOML is refused and the file left untouched -- so the editor never writes
+something a reader would reject. The edit itself is still pure line surgery; only its *output*
+is parsed, to verify, and `tomllib` is the standard library, so there are no third-party deps.
 """
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 import tempfile
-from collections.abc import Iterator, Sequence
+import tomllib
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
+from typing import Concatenate, ParamSpec, TypeVar, cast
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
 
 __all__ = [
     "TOMLEditor",
@@ -73,6 +84,40 @@ _NAMED_ESCAPES = {
     "\r": "\\r",
 }
 _NAMED_UNESCAPES = {"\\": "\\", '"': '"', "b": "\b", "t": "\t", "n": "\n", "f": "\f", "r": "\r"}
+
+
+def _reject_if_invalid(
+    method: Callable[Concatenate[TOMLEditor, _P], _R],
+) -> Callable[Concatenate[TOMLEditor, _P], _R]:
+    """Wrap a structural writer so that a change producing invalid TOML -- a corruption the
+    flat-line scan did not foresee -- is rolled back and refused, never written. The standard
+    library's `tomllib` re-parses the writer's *output* (never the input -- the edit stays pure
+    line surgery); if it cannot parse the result, tomlite does not keep it and raises
+    `UnsupportedTOMLError`. This is the mechanical net behind the specific name-collision guards;
+    unlike a hand-rolled check it cannot miss a case. Any error the writer itself raises also
+    leaves the document untouched, so every edit is all-or-nothing. The verify runs once per
+    write, so a hot loop over a very large document pays for a re-parse each time."""
+
+    @functools.wraps(method)
+    def wrapper(self: TOMLEditor, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+        snapshot = list(self._lines)
+        try:
+            result = method(self, *args, **kwargs)
+            tomllib.loads(self.dumps())  # the OUTPUT must parse; the input is never parsed to edit
+            return result
+        except tomllib.TOMLDecodeError as err:
+            self._lines = snapshot
+            try:  # only on the failure path: was the document already invalid, or did this edit break it?
+                tomllib.loads(self.dumps())
+                cause = "this edit would make the document invalid TOML"
+            except tomllib.TOMLDecodeError:
+                cause = "the document is not valid TOML even before this edit"
+            raise UnsupportedTOMLError(f"{cause} ({err}); refused") from err
+        except BaseException:
+            self._lines = snapshot
+            raise
+
+    return cast("Callable[Concatenate[TOMLEditor, _P], _R]", wrapper)
 
 
 class TOMLEditor:
@@ -176,6 +221,7 @@ class TOMLEditor:
 
     # -- top-level key -------------------------------------------------------
 
+    @_reject_if_invalid
     def set_root_key(
         self,
         key: str,
@@ -218,6 +264,7 @@ class TOMLEditor:
         misorder into a valid-but-wrong call."""
         return self._array_entry(array, match_field, match_value) is not None
 
+    @_reject_if_invalid
     def append_to_array(
         self,
         array: str,
@@ -243,23 +290,18 @@ class TOMLEditor:
         # scanner, so it guards here to refuse an unsupported document like its siblings.
         self._require_supported()
         _require_bare_path(array)
-        if self._header_index(array) is not None:
-            raise UnsupportedTOMLError(
-                f"{array!r} is already a table ([{array}]); tomlite cannot also append to it "
-                f"as an array-of-tables"
-            )
-        if self._root_entry(array) is not None:
-            raise UnsupportedTOMLError(
-                f"{array!r} is already a top-level key; tomlite cannot also open it as an "
-                f"array-of-tables"
-            )
+        self._refuse_header_conflict(array, is_array=True)
         if isinstance(fields, str):  # a str is a Sequence, so guard it out with a clear error
             raise TypeError("fields must be a sequence of (key, value) pairs, not a str")
         block = [f"[[{array}]]"]
+        seen: set[str] = set()
         for field in fields:
             if not (isinstance(field, tuple) and len(field) == 2):
                 raise TypeError(f"each field must be a (key, value) pair, not {field!r}")
             key, val = field
+            if key in seen:  # two fields with one key would emit a duplicate -- invalid TOML
+                raise ValueError(f"duplicate field key {key!r} in a [[{array}]] block")
+            seen.add(key)
             block.extend(self._entry_lines(key, val, multiline=multiline))
         header = self._before_table_index(before_table) if before_table else None
         if header is None:  # end of file -- a leading blank if the last line is not one
@@ -275,6 +317,7 @@ class TOMLEditor:
         before = [""] if at > 0 and self._lines[at - 1].strip() else []
         self._lines[at:at] = [*before, *block, ""]
 
+    @_reject_if_invalid
     def update_in_array(
         self,
         array: str,
@@ -310,6 +353,7 @@ class TOMLEditor:
 
     # -- [table] key ---------------------------------------------------------
 
+    @_reject_if_invalid
     def set_table_key(
         self, table: str, key: str, value: TOMLValue, *, multiline: bool = False
     ) -> None:
@@ -326,16 +370,7 @@ class TOMLEditor:
         _require_bare_path(table)
         header = self._header_index(table)
         if header is None:
-            if self._root_entry(table) is not None:
-                raise UnsupportedTOMLError(
-                    f"{table!r} is already a top-level key; tomlite cannot also open it "
-                    f"as a table"
-                )
-            if self._header_index(table, is_array=True) is not None:
-                raise UnsupportedTOMLError(
-                    f"{table!r} is already an array-of-tables ([[{table}]]); tomlite cannot "
-                    f"also open it as a table"
-                )
+            self._refuse_header_conflict(table, is_array=False)
             pad = [""] if self._lines and self._lines[-1].strip() else []
             self._lines += [*pad, f"[{table}]", *self._entry_lines(key, value, multiline=multiline)]
             return
@@ -349,6 +384,9 @@ class TOMLEditor:
         self._lines[end:end] = self._entry_lines(key, value, multiline=multiline)
 
     # -- removal -------------------------------------------------------------
+    # The removers are deliberately NOT wrapped in `_reject_if_invalid`: deleting a whole entry
+    # or block from valid TOML always leaves valid TOML (an emptied `[table]` header is still
+    # valid), so there is nothing for the net to catch.
 
     def unset_root_key(self, key: str) -> bool:
         """Remove a top-level `key`, its multi-line value if it has one, and one blank
@@ -511,6 +549,55 @@ class TOMLEditor:
             if parsed is not None and parsed[0].split(".", 1)[0].strip() == name:
                 return True
         return False
+
+    def _declared_kinds(self) -> dict[str, str]:
+        """Each name the document currently declares mapped to its kind -- `"root"` (a top-level
+        key), `"table"`, or `"aot"` (array-of-tables) -- INCLUDING the tables a dotted header
+        implies: `[a.b]` declares `a` a table and `a.b` a table; `[[a.b]]` declares `a` a table
+        and `a.b` an aot. Assumes a valid input (each name one kind); the first declaration of a
+        name wins. This is the little structural model `_refuse_header_conflict` consults so a
+        line-based writer will not append a header that makes one name two kinds at once."""
+        kinds: dict[str, str] = {}
+        for key, _first, _last in self._entries(0, self._preamble_end()):
+            kinds.setdefault(key, "root")
+        for line in self._lines:
+            parsed = _header_name(line)
+            if parsed is None:
+                continue
+            name, is_array = parsed
+            segments = [seg.strip() for seg in name.split(".")]
+            for depth in range(len(segments) - 1):  # every parent segment is an implied table
+                kinds.setdefault(".".join(segments[: depth + 1]), "table")
+            kinds.setdefault(name, "aot" if is_array else "table")
+        return kinds
+
+    def _refuse_header_conflict(self, name: str, *, is_array: bool) -> None:
+        """Refuse to open a `[name]` (`is_array=False`) or `[[name]]` (`is_array=True`) header
+        when it would make a name two kinds at once -- e.g. `[x.y]` where `x` is already a
+        top-level key, or `[[x]]` where `[x.z]` already made `x` a table. Opening a header this
+        writer emits must never produce TOML a reader would reject; where the flat-line model
+        cannot tell, it refuses rather than corrupt. Adding a key to a table that already exists,
+        or another block to an existing `[[name]]`, is not a conflict."""
+        kinds = self._declared_kinds()
+        segments = [seg.strip() for seg in name.split(".")]
+        # The header declares each parent segment a table and the full name a table or an aot.
+        wants = [(".".join(segments[: d + 1]), "table") for d in range(len(segments) - 1)]
+        wants.append((name, "aot" if is_array else "table"))
+        for prefix, want in wants:
+            have = kinds.get(prefix)
+            if have is None or (have == want and want == "table"):
+                continue  # undeclared, or a table coexisting with the same table -- fine
+            if have == "aot" and want == "aot" and prefix == name:
+                continue  # appending another block to an existing [[name]] -- the normal case
+            phrase = {
+                "root": "a top-level key",
+                "table": "a table",
+                "aot": "an array-of-tables",
+            }[have]
+            raise UnsupportedTOMLError(
+                f"{name!r} cannot be opened here: {prefix!r} is already {phrase} "
+                f"(a TOML name cannot be two kinds at once)"
+            )
 
     def _table_end(self, start: int) -> int:
         """One past the last *entry* line of the table whose body starts at `start` -- the next

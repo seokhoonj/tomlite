@@ -70,7 +70,8 @@ A construct its line scanner can't edit safely — a multi-line string or a dott
 
 Any value is stored safely and reads back unchanged, even one with quotes, brackets, or
 backslashes. Changing a value keeps the comment on its line, an array you wrote across
-several lines stays multi-line, and the file's newline style (LF or CRLF) is preserved.
+several lines stays multi-line, and the file's newline style (LF or CRLF) is preserved. An
+edit that would make the file invalid TOML is refused and the file left untouched.
 
 ## 5. API
 

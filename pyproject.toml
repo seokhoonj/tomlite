@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 
 [project]
 name            = "tomlite"
-version         = "0.1.0"
+version         = "0.1.1"
 description     = "A tiny, zero-dependency TOML editor that changes a config file in place without disturbing its comments or layout."
 readme          = "README.md"
 license         = "MIT"
